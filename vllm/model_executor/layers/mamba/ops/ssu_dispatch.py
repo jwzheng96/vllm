@@ -298,7 +298,10 @@ def initialize_mamba_ssu_backend(
         )
 
     backend_cls = _BACKEND_REGISTRY[backend]
-    if isinstance(_mamba_ssu_backend, backend_cls):
+    if (
+        isinstance(_mamba_ssu_backend, backend_cls)
+        and _mamba_ssu_backend._mamba_config == mamba_config
+    ):
         return
 
     _mamba_ssu_backend = backend_cls(mamba_config)

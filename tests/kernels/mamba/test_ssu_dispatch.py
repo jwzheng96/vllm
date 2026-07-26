@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
+import vllm.platforms as platforms
 from vllm.config.mamba import MambaBackendEnum, MambaConfig
 from vllm.model_executor.layers.mamba.ops.ssu_dispatch import (
     FlashInferSSUBackend,
@@ -57,6 +60,65 @@ def test_explicit_triton_backend():
     )
     backend = get_mamba_ssu_backend()
     assert isinstance(backend, TritonSSUBackend)
+
+
+@pytest.mark.parametrize(
+    (
+        "second_stochastic_rounding",
+        "second_philox_rounds",
+        "should_reinitialize",
+    ),
+    [
+        (False, 1, False),
+        (False, 2, True),
+        (True, 1, True),
+    ],
+)
+def test_reinitialize_backend_when_config_changes(
+    monkeypatch,
+    second_stochastic_rounding,
+    second_philox_rounds,
+    should_reinitialize,
+):
+    import vllm.model_executor.layers.mamba.ops.ssu_dispatch as mod
+
+    class TestSSUBackend:
+        name = "test"
+
+        def __init__(self, mamba_config):
+            self._mamba_config = mamba_config
+
+    monkeypatch.setattr(mod, "_mamba_ssu_backend", None)
+    monkeypatch.setitem(mod._BACKEND_REGISTRY, MambaBackendEnum.TRITON, TestSSUBackend)
+    monkeypatch.setattr(
+        platforms,
+        "current_platform",
+        SimpleNamespace(
+            is_cpu=lambda: False,
+            is_cuda=lambda: True,
+            is_device_capability_family=lambda family: family == 100,
+        ),
+    )
+
+    first_config = MambaConfig(
+        backend=MambaBackendEnum.TRITON,
+        stochastic_rounding_philox_rounds=1,
+    )
+    initialize_mamba_ssu_backend(first_config, _kv_cache_config_with_ssu())
+    first_backend = get_mamba_ssu_backend()
+
+    second_config = MambaConfig(
+        backend=MambaBackendEnum.TRITON,
+        enable_stochastic_rounding=second_stochastic_rounding,
+        stochastic_rounding_philox_rounds=second_philox_rounds,
+    )
+    initialize_mamba_ssu_backend(second_config, _kv_cache_config_with_ssu())
+    second_backend = get_mamba_ssu_backend()
+
+    assert (second_backend is not first_backend) is should_reinitialize
+    assert second_backend._mamba_config is (
+        second_config if should_reinitialize else first_config
+    )
 
 
 @pytest.mark.skipif(not HAS_FLASHINFER, reason="flashinfer not installed")
